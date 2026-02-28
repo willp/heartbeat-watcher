@@ -1,137 +1,212 @@
-#!/usr/bin/python3 -u
 import os
 import sys
 import time
 import json
+import re
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone as dt_timezone
+from zoneinfo import ZoneInfo  # Requires Python 3.9+
 
 class HbWatcher:
     def __init__(self, config_path="hbwatcher_config.json"):
         self.config_path = config_path
-        
-        # Configuration variables (strongly typed/explicit, no dict passing)
-        self.api_url = ""
-        self.api_user = ""
-        self.api_pass = ""
-        self.deadman_url = ""
-        
-        # Operational tuning variables (will be overridden by config if present)
-        self.retries = 3
-        self.delay = 5
-        self.timeout = 10
-        self.poll_interval = 60
+        self.load_config()
 
     def load_config(self):
-        """Loads and validates the JSON configuration file."""
-        if not os.path.exists(self.config_path):
-            print(f"FATAL: Configuration file '{self.config_path}' not found.")
-            sys.exit(1)
-            
         with open(self.config_path, 'r') as f:
-            try:
-                cfg = json.load(f)
-            except json.JSONDecodeError as e:
-                print(f"FATAL: Invalid JSON in '{self.config_path}': {e}")
-                sys.exit(1)
-
-        # 1. Enforce required parameters (No hardcoded defaults for auth/URLs)
-        try:
-            self.api_url = cfg["api_url"]
-            self.api_user = cfg["api_user"]
-            self.api_pass = cfg["api_pass"]
-            self.deadman_url = cfg["deadman_url"]
-        except KeyError as e:
-            print(f"FATAL: Missing required config parameter: {e}")
-            sys.exit(1)
-
-        # 2. Load operational parameters (fallback to class defaults if missing)
-        self.retries = cfg.get("retries", self.retries)
-        self.delay = cfg.get("delay", self.delay)
-        self.timeout = cfg.get("timeout", self.timeout)
-        self.poll_interval = cfg.get("poll_interval", self.poll_interval)
+            cfg = json.load(f)
         
-        print(f"🔧 Config loaded successfully. Polling {self.api_url} every {self.poll_interval}s.")
+        self.api_url = cfg["api_url"].rstrip('/')
+        self.api_user = cfg["api_user"]
+        self.api_pass = cfg["api_pass"]
+        self.deadman_url = cfg.get("deadman_url", "")
+        self.ntfy_url = cfg.get("ntfy_url", "")
+        
+        self.retries = cfg.get("retries", 3)
+        self.delay = cfg.get("delay", 5)
+        self.timeout = cfg.get("timeout", 10)
+        self.poll_interval = cfg.get("poll_interval", 60)
+        
+        # Pull preferred timezone from environment or fallback
+        self.tz_name = os.environ.get("TZ", "America/Los_Angeles")
 
-    def fetch_data_with_retries(self):
-        """Fetches data with strict timeouts and a '3 strikes' retry rule."""
-        for attempt in range(1, self.retries + 1):
+    def get_epoch(self):
+        return int(time.time())
+
+    def format_time(self, epoch_ts):
+        """Formats timestamp dynamically (e.g., '2026-02-28 13:41 PST (47 mins ago)')"""
+        if not epoch_ts: return "Unknown"
+        
+        # Calculate relative time
+        delta = self.get_epoch() - epoch_ts
+        if delta < 60: rel = f"{delta} sec"
+        elif delta < 3600: rel = f"{delta // 60} mins"
+        elif delta < 86400: rel = f"{delta // 3600} hours { (delta % 3600) // 60 } mins"
+        else: rel = f"{delta // 86400} days { (delta % 86400) // 3600 } hours"
+
+        # Calculate localized absolute time
+        dt = datetime.fromtimestamp(epoch_ts, tz=dt_timezone.utc)
+        local_dt = dt.astimezone(ZoneInfo(self.tz_name))
+        abs_str = local_dt.strftime('%Y-%m-%d %H:%M %Z')
+        
+        return f"{abs_str} ({rel} ago)"
+
+    def build_identifier(self, job):
+        port_str = f":{job['port']}" if job.get('port') else ""
+        task_str = f" [{job['task']}]" if job.get('task') else ""
+        ver_str = f" (v{job['version']})" if job.get('version') else ""
+        return f"{job['hostname']} | {job['app_name']}{port_str}{task_str}{ver_str}"
+
+    def matches_filter(self, filter_str, value):
+        if not filter_str: return True # Empty rule matches everything
+        val_str = str(value) if value is not None else ""
+        
+        if filter_str.startswith('/') and filter_str.endswith('/'):
             try:
-                response = requests.get(
-                    self.api_url, 
-                    auth=(self.api_user, self.api_pass), 
-                    timeout=self.timeout
-                )
-                response.raise_for_status() 
-                return response.json()
+                return bool(re.search(filter_str[1:-1], val_str))
+            except re.error:
+                return False
+        return filter_str in val_str
+
+    def is_in_maintenance(self, job, windows):
+        """Returns True if ANY active window matches ALL non-empty filters."""
+        for w in windows:
+            if (self.matches_filter(w.get('hostname_filter'), job.get('hostname')) and
+                self.matches_filter(w.get('app_name_filter'), job.get('app_name')) and
+                self.matches_filter(w.get('port_filter'), job.get('port')) and
+                self.matches_filter(w.get('task_filter'), job.get('task')) and
+                self.matches_filter(w.get('version_filter'), job.get('version'))):
+                return True
+        return False
+
+    def fetch_data(self):
+        resp = requests.get(f"{self.api_url}/watcher_data/", auth=(self.api_user, self.api_pass), timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_django(self, updates, failed_delivery):
+        payload = {"updates": updates, "failed_delivery": failed_delivery}
+        requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), timeout=self.timeout)
+
+    def dispatch_notification(self, title, body):
+        """Tries to send push notification with retries."""
+        if not self.ntfy_url: return True
+        
+        for attempt in range(1, self.retries + 2):
+            try:
+                requests.post(self.ntfy_url, data=body.encode('utf-8'), headers={"Title": title}, timeout=self.timeout)
+                return True
             except requests.exceptions.RequestException as e:
-                print(f"⚠️ API Attempt {attempt} failed: {e}")
-                if attempt == self.retries:
-                    raise # Bubble up the exception on the final strike
-                time.sleep(self.delay)
+                print(f"⚠️ Push notification failed (Attempt {attempt}): {e}")
+                if attempt <= self.retries:
+                    time.sleep(self.delay)
+        return False
 
-    def dispatch_notification(self, node):
-        """
-        Integration point for 2-way alerting (ntfy.sh, notify-send, etc.)
-        """
-        print(f"🚨 FLATLINE: {node['hostname']} ({node['app_name']}) is down!")
-        
-        # Example of how notify-send integration would look:
-        # os.system(f"notify-send 'Heartbeat Alert' '{node['hostname']} is down' --action='snooze=Snooze 1h' --action='ack=Acknowledge'")
-        
-        # Example of how ntfy.sh integration would look:
-        # requests.post("https://ntfy.sh/my_private_topic",
-        #     data=f"Node {node['hostname']} is offline",
-        #     headers={
-        #         "Actions": "view, Acknowledge, https://hb.tenthlight.com:8333/api/ack..., clear=true;"
-        #     }
-        # )
+    def evaluate_states(self, data):
+        now = self.get_epoch()
+        jobs = data['jobs']
+        windows = data['maintenance_windows']
+        updates = []
+        messages = {"DEAD": [], "RECOVERED": [], "MAINTENANCE": []}
 
-    def acknowledge_to_server(self, node_id):
-        """Tells the upstream server the alert was dispatched."""
-        ack_url = f"{self.api_url.rstrip('/')}/{node_id}/acknowledge/"
-        try:
-            requests.post(ack_url, auth=(self.api_user, self.api_pass), timeout=self.timeout)
-        except requests.exceptions.RequestException as e:
-            print(f"⚠️ Failed to acknowledge alert for {node_id}: {e}")
+        for job in jobs:
+            is_dead = now > (job['received_timestamp'] + job['alert_after'])
+            in_maint = self.is_in_maintenance(job, windows)
+            state = job['alert_state']
+            ident = self.build_identifier(job)
+            
+            new_state = state
+            msg = None
+            flatlined_at = job.get('flatlined_at')
 
-    def ping_deadman(self):
-        """Notifies the external monitor that HbWatcher is alive and healthy."""
-        try:
-            requests.get(self.deadman_url, timeout=self.timeout)
-        except Exception as e:
-            print(f"⚠️ Could not reach Dead Man's Switch: {e}")
+            # 1. DEAD LOGIC
+            if is_dead:
+                if not flatlined_at: 
+                    flatlined_at = job['received_timestamp'] + job['alert_after']
+                time_str = self.format_time(flatlined_at)
+
+                if in_maint and state != 'IN_MAINTENANCE':
+                    new_state = 'IN_MAINTENANCE'
+                    msg = f"🔇 Suppressed: {ident} transitioned into maintenance mode due to an active rule. Dead since {time_str}."
+                    messages["MAINTENANCE"].append(msg)
+                
+                elif not in_maint:
+                    if state == 'NORMAL':
+                        new_state = 'ALERT_SENT'
+                        msg = f"🚨 FLATLINE: {ident} stopped responding at {time_str}."
+                        messages["DEAD"].append(msg)
+                    elif state == 'IN_MAINTENANCE':
+                        new_state = 'ALERT_SENT'
+                        msg = f"🚨 Maintenance Ended (Still Dead): {ident} never recovered. It originally died at {time_str}."
+                        messages["DEAD"].append(msg)
+                    elif state == 'SNOOZED' and job.get('snoozed_until', 0) < now:
+                        new_state = 'ALERT_SENT'
+                        msg = f"⏰ Snooze Expired: {ident} is still dead. Originally died at {time_str}."
+                        messages["DEAD"].append(msg)
+
+            # 2. ALIVE / RECOVERED LOGIC
+            else:
+                flatlined_at = None 
+                if state in ['ALERT_SENT', 'SNOOZED']:
+                    new_state = 'NORMAL'
+                    msg = f"✅ Auto-Recovered: {ident} came back online. It was down since {self.format_time(job.get('flatlined_at'))}."
+                    messages["RECOVERED"].append(msg)
+                elif state == 'ACKNOWLEDGED':
+                    new_state = 'NORMAL'
+                    msg = f"✅ Resolved: You fixed {ident}! It was down since {self.format_time(job.get('flatlined_at'))}."
+                    messages["RECOVERED"].append(msg)
+                elif state == 'IN_MAINTENANCE':
+                    new_state = 'NORMAL'
+                    msg = f"✅ Silent Recovery: {ident} came back online during maintenance."
+                    # Purposely NOT appending to messages["RECOVERED"] so your phone doesn't buzz.
+
+            # If state changed, queue it for the DB update
+            if new_state != state:
+                updates.append({
+                    "id": job['id'],
+                    "previous_state": state,
+                    "alert_state": new_state,
+                    "flatlined_at": flatlined_at,
+                    "message": msg or "State transitioned implicitly."
+                })
+
+        return updates, messages
 
     def run_forever(self):
-        """The main, continuous polling loop."""
-        print("🩺 HbWatcher: Starting continuous monitoring...")
+        print(f"🩺 HbWatcher started. Using TZ: {self.tz_name}")
         while True:
             try:
-                data = self.fetch_data_with_retries()
-                now = datetime.now(timezone.utc).timestamp()
-                
-                for node in data:
-                    if node.get('alert_sent'):
-                        continue
-                        
-                    deadline = node['received_timestamp'] + node['alert_after']
-                    
-                    if now > deadline:
-                        self.dispatch_notification(node)
-                        self.acknowledge_to_server(node.get('id'))
+                data = self.fetch_data()
+                updates, messages = self.evaluate_states(data)
 
-                # If we survived the loop without crashing/timing out, we are healthy.
-                self.ping_deadman()
+                # Batch and Send
+                has_msgs = any(messages.values())
+                delivery_failed = False
+                
+                if has_msgs:
+                    title = f"Heartbeat: {len(messages['DEAD'])} Dead, {len(messages['RECOVERED'])} Recovered"
+                    body = ""
+                    if data.get('has_undelivered_alerts'):
+                        body += "⚠️ (Previous updates *FAILED* delivery to you.)\n\n"
+                    
+                    for cat, msgs in messages.items():
+                        if msgs: body += f"--- {cat} ---\n" + "\n".join(msgs) + "\n\n"
+
+                    # Try to send. If False, we trigger degraded mode flag.
+                    delivery_failed = not self.dispatch_notification(title, body.strip())
+
+                # Always update Django (even if push notification failed)
+                if updates or (has_msgs and not delivery_failed and data.get('has_undelivered_alerts')):
+                    self.update_django(updates, delivery_failed)
+
+                if self.deadman_url:
+                    requests.get(self.deadman_url, timeout=self.timeout)
 
             except Exception as e:
-                # Catch-all to prevent the watcher from dying completely on unexpected errors
-                print(f"❌ HbWatcher critical loop error: {e}")
-                # Notice we skip pinging the deadman here, so Healthchecks.io will alert us.
-
+                print(f"❌ Loop Error: {e}")
+            
             time.sleep(self.poll_interval)
 
-
 if __name__ == "__main__":
-    watcher = HbWatcher()
-    watcher.load_config()
-    watcher.run_forever()
+    w = HbWatcher()
+    w.run_forever()
