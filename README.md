@@ -39,10 +39,14 @@ The installer will check this for you. If it fails, follow the distro-specific i
     The installer will create `/opt/hbwatcher`, set up the virtual environment, install dependencies, and start the systemd service automatically.
 
 ## ⚙️ Configuration
+
 The `hbwatcher_config.json` file is stored in `/etc/hbwatcher/` once installed.
+
 * `api_url`: Your Django Heartbeat API endpoint.
 * `ntfy_url`: Your public or local `ntfy` topic (e.g., `https://ntfy.sh/my-secret-topic`).
 * `poll_interval`: How often to check for dead heartbeats (default: 60s).
+
+Read more about here about [How to Configure](CONFIG.md) your HbWatcher.
 
 ## 📊 Monitoring Logs
 Since HbWatcher runs under systemd, its logs are managed by `journald`. You can view them in real-time with:
