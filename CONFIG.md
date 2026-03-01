@@ -24,7 +24,7 @@ If you don't use authentication with your **ntfy.sh** server, you can leave out 
 
 ## Deadman URL: Alerting when HbWatcher Dies
 
-You can get free "deadman switch" monitoring from [hc-ping.com](healthchecks.io) which will alert you if HbWatcher stops checking in on a custom, private URL that you can configure on their site.  This helps close the loop on your monitoring so you'll know if your HbWatcher itself is dead.
+You can get free "deadman switch" monitoring from [healthchecks.io](healthchecks.io) which will alert you if HbWatcher stops checking in on a custom, private URL that you can configure on their site.  This helps close the loop on your monitoring so you'll know if your HbWatcher itself is dead.
 
 ---
 
