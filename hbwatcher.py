@@ -58,7 +58,9 @@ class HbWatcher:
     def build_identifier(self, job):
         port_str = f":{job['port']}" if job.get('port') else ""
         task_str = f" [{job['task']}]" if job.get('task') else ""
-        return f"{job['hostname']} | {job['app_name']}{port_str}{task_str}"
+        
+        # Wrap the whole string in backticks to protect all fields
+        return f"`{job['hostname']} | {job['app_name']}{port_str}{task_str}`"
 
     def matches_filter(self, filter_str, value):
         if not filter_str: return True
@@ -108,7 +110,7 @@ class HbWatcher:
 
     def dispatch_notification(self, title, body, priority="default", tags="", actions=""):
         if not self.ntfy_url: return True
-        headers = {"Title": title, "Priority": priority, "User-Agent": self.user_agent}
+        headers = {"Title": title, "Priority": priority, "User-Agent": self.user_agent, "Markdown": "yes",}
         if tags: headers["Tags"] = tags
         if actions: headers["Actions"] = actions # <--- Inject the buttons
         if self.ntfy_token: headers["Authorization"] = f"Bearer {self.ntfy_token}"
