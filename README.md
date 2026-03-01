@@ -48,3 +48,4 @@ The `hbwatcher_config.json` file is stored in `/etc/hbwatcher/` once installed.
 Since HbWatcher runs under systemd, its logs are managed by `journald`. You can view them in real-time with:
 ```bash
 sudo journalctl -u hbwatcher -f
+```
