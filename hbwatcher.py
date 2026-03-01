@@ -89,7 +89,7 @@ class HbWatcher:
         payload = {"updates": updates, "failed_delivery": failed_delivery}
         requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), headers=headers, timeout=self.timeout)
 
-# NEW: Build the Action header string containing multiple tokens
+    # NEW: Build the Action header string containing multiple tokens
     def build_actions_header(self, tokens_list):
         if not tokens_list: return ""
         
@@ -197,7 +197,18 @@ class HbWatcher:
                 
                 alert_dispatched = False
 
-                # 1. Handle Standard State Transitions
+                # --- NEW: PROCESS CONFIRMATIONS FROM WEBHOOKS ---
+                confirmations = data.get("confirmations", [])
+                for conf_msg in confirmations:
+                    # Send a quiet, low-priority checkmark push
+                    self.dispatch_notification(
+                        title="Action Confirmed", 
+                        body=conf_msg, 
+                        priority="low", 
+                        tags="white_check_mark"
+                    )
+
+                # Handle Standard State Transitions
                 if any(messages.values()):
                     prio = "urgent" if messages["DEAD"] else "default"
                     tags = "rotating_light,skull" if messages["DEAD"] else "white_check_mark"
@@ -215,7 +226,7 @@ class HbWatcher:
                 elif updates:
                     self.update_django(updates, False)
 
-                # 2. Handle the Nag Timer
+                # Handle the Nag Timer
                 now = self.get_epoch()
                 if alert_dispatched:
                     self.last_alert_time = now
@@ -231,7 +242,7 @@ class HbWatcher:
                         self.dispatch_notification(nag_title, nag_body, priority="urgent", tags="rotating_light,alarm_clock", actions=actions)
                         self.last_alert_time = now
 
-                # 3. Deadman Switch
+                # Deadman Switch
                 since_last_deadman_ping = time.time() - last_deadman_ping_ts
                 if self.deadman_url and since_last_deadman_ping > 30:
                     try:
