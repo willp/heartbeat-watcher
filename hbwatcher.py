@@ -2,15 +2,20 @@
 import os
 import time
 import json
+import platform
 import re
 import requests
 from datetime import datetime, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
+VERSION = "1.0.1"
+
 class HbWatcher:
     def __init__(self, config_path="hbwatcher_config.json"):
         self.config_path = config_path
         self.load_config()
+        # Pre-build the User Agent string
+        self.user_agent = f"HbWatcher/{VERSION} (Python {platform.python_version()})"
 
     def load_config(self):
         with open(self.config_path, 'r') as f:
@@ -82,13 +87,15 @@ class HbWatcher:
         return False
 
     def fetch_data(self):
+        headers = {"User-Agent": self.user_agent}
         resp = requests.get(f"{self.api_url}/watcher_data/", auth=(self.api_user, self.api_pass), timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def update_django(self, updates, failed_delivery):
+        headers = {"User-Agent": self.user_agent}
         payload = {"updates": updates, "failed_delivery": failed_delivery}
-        requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), timeout=self.timeout)
+        requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), timeout=self.timeout, headers=headers,)
 
     def dispatch_notification(self, title, body, priority="default", tags=""):
         if not self.ntfy_url: return True

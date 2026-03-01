@@ -53,3 +53,27 @@ Since HbWatcher runs under systemd, its logs are managed by `journald`. You can 
 ```bash
 sudo journalctl -u hbwatcher -f
 ```
+
+## 📜 Changelog
+### v1.0.1 (Current)
+* Feature: Added custom User-Agent reporting. The watcher now identifies as HbWatcher/1.0.1 (Python X.Y.Z) in web server logs.
+
+* Feature: Integrated platform module for enhanced environment telemetry.
+
+* Fix: Improved unbuffered logging for more responsive journalctl output.
+
+### v1.0.0
+* Initial Release: Core state-machine logic, ntfy.sh integration, and systemd installer/uninstaller.
+
+# 🧹 Uninstallation
+
+To remove the daemon while preserving configuration:
+
+```Bash
+sudo ./uninstall.sh
+```
+To remove everything (including secret keys):
+
+```Bash
+sudo ./uninstall.sh --purge
+```
