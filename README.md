@@ -55,6 +55,10 @@ sudo journalctl -u hbwatcher -f
 ```
 
 ## 📜 Changelog
+### v1.1.0 (Current)
+* **Feature:** Added `nag_interval` timer. The watcher will now send a periodic "Reminder" push notification summarizing any currently dead, unacknowledged jobs. This timer resets anytime a new alert is triggered or cleared.
+* **Fix:** Stopped overlapping text in Django admin list view.
+
 ### v1.0.1 (Current)
 * Feature: Added custom User-Agent reporting. The watcher now identifies as HbWatcher/1.0.1 (Python X.Y.Z) in web server logs.
 

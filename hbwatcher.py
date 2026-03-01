@@ -2,20 +2,23 @@
 import os
 import time
 import json
-import platform
 import re
 import requests
+import platform
 from datetime import datetime, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 class HbWatcher:
     def __init__(self, config_path="hbwatcher_config.json"):
         self.config_path = config_path
         self.load_config()
-        # Pre-build the User Agent string
         self.user_agent = f"HbWatcher/{VERSION} (Python {platform.python_version()})"
+        
+        # Initialize the nag timer so it is primed to nag immediately 
+        # on the first loop if things are already broken upon restart.
+        self.last_alert_time = self.get_epoch() - self.nag_interval
 
     def load_config(self):
         with open(self.config_path, 'r') as f:
@@ -26,19 +29,15 @@ class HbWatcher:
         self.api_pass = cfg["api_pass"]
         self.deadman_url = cfg.get("deadman_url", "")
         self.ntfy_url = cfg.get("ntfy_url", "")
-        
-        # Auth fields (in case you are still using them)
         self.ntfy_token = cfg.get("ntfy_token", "")
-        self.ntfy_user = cfg.get("ntfy_user", "")
-        self.ntfy_pass = cfg.get("ntfy_pass", "")
         
         self.retries = cfg.get("retries", 3)
         self.delay = cfg.get("delay", 5)
         self.timeout = cfg.get("timeout", 10)
         self.poll_interval = cfg.get("poll_interval", 60)
-        if self.poll_interval < 15:
-            print(f"WARNING, poll_interval may not be set lower than 15 seconds.")
-            self.poll_interval = 15
+        
+        # NEW: The nag interval in seconds (default 10 mins). Set to 0 to disable.
+        self.nag_interval = cfg.get("nag_interval", 600)
         
         self.tz_name = os.environ.get("TZ", "America/Los_Angeles")
 
@@ -46,40 +45,30 @@ class HbWatcher:
         return int(time.time())
 
     def format_time(self, epoch_ts):
-        """Formats timestamp dynamically (e.g., '2026-02-28 13:41 PST (47 mins ago)')"""
         if not epoch_ts: return "Unknown"
-        
         delta = self.get_epoch() - epoch_ts
         if delta < 60: rel = f"{delta} sec"
         elif delta < 3600: rel = f"{delta // 60} mins"
-        elif delta < 86400: rel = f"{delta // 3600} hours { (delta % 3600) // 60 } mins"
-        else: rel = f"{delta // 86400} days { (delta % 86400) // 3600 } hours"
+        else: rel = f"{delta // 3600} hours"
 
         dt = datetime.fromtimestamp(epoch_ts, tz=dt_timezone.utc)
         local_dt = dt.astimezone(ZoneInfo(self.tz_name))
-        abs_str = local_dt.strftime('%Y-%m-%d %H:%M %Z')
-        
-        return f"{abs_str} ({rel} ago)"
+        return f"{local_dt.strftime('%Y-%m-%d %H:%M %Z')} ({rel} ago)"
 
     def build_identifier(self, job):
         port_str = f":{job['port']}" if job.get('port') else ""
         task_str = f" [{job['task']}]" if job.get('task') else ""
-        ver_str = f" (v{job['version']})" if job.get('version') else ""
-        return f"{job['hostname']} | {job['app_name']}{port_str}{task_str}{ver_str}"
+        return f"{job['hostname']} | {job['app_name']}{port_str}{task_str}"
 
     def matches_filter(self, filter_str, value):
         if not filter_str: return True
         val_str = str(value) if value is not None else ""
-        
         if filter_str.startswith('/') and filter_str.endswith('/'):
-            try:
-                return bool(re.search(filter_str[1:-1], val_str))
-            except re.error:
-                return False
+            try: return bool(re.search(filter_str[1:-1], val_str))
+            except: return False
         return filter_str in val_str
 
     def is_in_maintenance(self, job, windows):
-        """Returns True if ANY active window matches ALL non-empty filters."""
         for w in windows:
             if (self.matches_filter(w.get('hostname_filter'), job.get('hostname')) and
                 self.matches_filter(w.get('app_name_filter'), job.get('app_name')) and
@@ -91,39 +80,27 @@ class HbWatcher:
 
     def fetch_data(self):
         headers = {"User-Agent": self.user_agent}
-        resp = requests.get(f"{self.api_url}/watcher_data/", auth=(self.api_user, self.api_pass), timeout=self.timeout, headers=headers,)
+        resp = requests.get(f"{self.api_url}/watcher_data/", auth=(self.api_user, self.api_pass), headers=headers, timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
 
     def update_django(self, updates, failed_delivery):
         headers = {"User-Agent": self.user_agent}
         payload = {"updates": updates, "failed_delivery": failed_delivery}
-        requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), timeout=self.timeout, headers=headers,)
+        requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), headers=headers, timeout=self.timeout)
 
     def dispatch_notification(self, title, body, priority="default", tags=""):
         if not self.ntfy_url: return True
-        
-        headers = {
-            "Title": title,
-            "Priority": priority
-        }
-        if tags:
-            headers["Tags"] = tags
-
-        auth = None
-        if self.ntfy_token:
-            headers["Authorization"] = f"Bearer {self.ntfy_token}"
-        elif self.ntfy_user and self.ntfy_pass:
-            auth = (self.ntfy_user, self.ntfy_pass)
+        headers = {"Title": title, "Priority": priority, "User-Agent": self.user_agent}
+        if tags: headers["Tags"] = tags
+        if self.ntfy_token: headers["Authorization"] = f"Bearer {self.ntfy_token}"
         
         for attempt in range(1, self.retries + 2):
             try:
-                requests.post(self.ntfy_url, data=body.encode('utf-8'), headers=headers, auth=auth, timeout=self.timeout)
+                requests.post(self.ntfy_url, data=body.encode('utf-8'), headers=headers, timeout=self.timeout)
                 return True
-            except requests.exceptions.RequestException as e:
-                print(f"⚠️ Push notification failed (Attempt {attempt}): {e}")
-                if attempt <= self.retries:
-                    time.sleep(self.delay)
+            except:
+                if attempt <= self.retries: time.sleep(self.delay)
         return False
 
     def evaluate_states(self, data):
@@ -132,108 +109,104 @@ class HbWatcher:
         windows = data['maintenance_windows']
         updates = []
         messages = {"DEAD": [], "RECOVERED": [], "MAINTENANCE": []}
+        currently_dead = [] # <--- NEW: Track active dead jobs for the nag timer
 
         for job in jobs:
             is_dead = now > (job['received_timestamp'] + job['alert_after'])
             in_maint = self.is_in_maintenance(job, windows)
             state = job['alert_state']
             ident = self.build_identifier(job)
-            
             new_state = state
             msg = None
             flatlined_at = job.get('flatlined_at')
 
             if is_dead:
-                if not flatlined_at: 
-                    flatlined_at = job['received_timestamp'] + job['alert_after']
+                if not flatlined_at: flatlined_at = job['received_timestamp'] + job['alert_after']
                 time_str = self.format_time(flatlined_at)
-
                 if in_maint and state != 'IN_MAINTENANCE':
                     new_state = 'IN_MAINTENANCE'
-                    msg = f"🔇 Suppressed: {ident} transitioned into maintenance mode due to an active rule. Dead since {time_str}."
+                    msg = f"🔇 Suppressed: {ident} is in maintenance. Dead since {time_str}."
                     messages["MAINTENANCE"].append(msg)
-                
                 elif not in_maint:
                     if state == 'NORMAL':
                         new_state = 'ALERT_SENT'
-                        msg = f"🚨 FLATLINE: {ident} stopped responding at {time_str}."
+                        msg = f"🚨 FLATLINE: {ident} died at {time_str}."
                         messages["DEAD"].append(msg)
                     elif state == 'IN_MAINTENANCE':
                         new_state = 'ALERT_SENT'
-                        msg = f"🚨 Maintenance Ended (Still Dead): {ident} never recovered. It originally died at {time_str}."
+                        msg = f"🚨 Maintenance Ended: {ident} is still dead. Died at {time_str}."
                         messages["DEAD"].append(msg)
                     elif state == 'SNOOZED' and job.get('snoozed_until', 0) < now:
                         new_state = 'ALERT_SENT'
-                        msg = f"⏰ Snooze Expired: {ident} is still dead. Originally died at {time_str}."
+                        msg = f"⏰ Snooze Expired: {ident} is still dead. Died at {time_str}."
                         messages["DEAD"].append(msg)
-
             else:
                 flatlined_at = None 
-                if state in ['ALERT_SENT', 'SNOOZED']:
+                if state in ['ALERT_SENT', 'SNOOZED', 'ACKNOWLEDGED']:
                     new_state = 'NORMAL'
-                    msg = f"✅ Auto-Recovered: {ident} came back online. It was down since {self.format_time(job.get('flatlined_at'))}."
+                    msg = f"✅ Recovered: {ident} is back online."
                     messages["RECOVERED"].append(msg)
-                elif state == 'ACKNOWLEDGED':
-                    new_state = 'NORMAL'
-                    msg = f"✅ Resolved: You fixed {ident}! It was down since {self.format_time(job.get('flatlined_at'))}."
-                    messages["RECOVERED"].append(msg)
-                elif state == 'IN_MAINTENANCE':
-                    new_state = 'NORMAL'
+
+            # Record if it's currently unhandled
+            if new_state == 'ALERT_SENT':
+                currently_dead.append(ident)
 
             if new_state != state:
-                updates.append({
-                    "id": job['id'],
-                    "previous_state": state,
-                    "alert_state": new_state,
-                    "flatlined_at": flatlined_at,
-                    "message": msg or "State transitioned implicitly."
-                })
-
-        return updates, messages
+                updates.append({"id": job['id'], "previous_state": state, "alert_state": new_state, "flatlined_at": flatlined_at, "message": msg or "Auto-transition."})
+                
+        return updates, messages, currently_dead
 
     def run_forever(self):
-        print(f"🩺 HbWatcher started. Using TZ: {self.tz_name}")
+        print(f"🩺 HbWatcher v{VERSION} started. TZ: {self.tz_name}")
         last_deadman_ping_ts = 0
         while True:
             try:
                 data = self.fetch_data()
-                updates, messages = self.evaluate_states(data)
-
-                has_msgs = any(messages.values())
-                delivery_failed = False
+                updates, messages, currently_dead = self.evaluate_states(data)
                 
-                if has_msgs:
-                    title = f"Heartbeat: {len(messages['DEAD'])} Dead, {len(messages['RECOVERED'])} Recovered"
-                    body = ""
-                    if data.get('has_undelivered_alerts'):
-                        body += "⚠️ (Previous updates *FAILED* delivery to you.)\n\n"
+                alert_dispatched = False
+
+                # 1. Handle Standard State Transitions
+                if any(messages.values()):
+                    prio = "urgent" if messages["DEAD"] else "default"
+                    tags = "rotating_light,skull" if messages["DEAD"] else "white_check_mark"
+                    body = "\n\n".join([f"--- {k} ---\n" + "\n".join(v) for k, v in messages.items() if v])
                     
-                    for cat, msgs in messages.items():
-                        if msgs: body += f"--- {cat} ---\n" + "\n".join(msgs) + "\n\n"
-
-                    # --- NEW PRIORITY ROUTING ---
-                    if messages['DEAD']:
-                        priority = "urgent"
-                        tags = "rotating_light,skull"
-                    else:
-                        priority = "default"
-                        tags = "white_check_mark"
-
-                    delivery_failed = not self.dispatch_notification(title, body.strip(), priority, tags)
-
-                if updates or (has_msgs and not delivery_failed and data.get('has_undelivered_alerts')):
+                    delivery_failed = not self.dispatch_notification("Heartbeat Update", body, prio, tags)
                     self.update_django(updates, delivery_failed)
+                    alert_dispatched = True
 
+                elif updates:
+                    # Updates occurred but were silent (e.g. entering snooze)
+                    self.update_django(updates, False)
+
+                # 2. Handle the Nag Timer
+                now = self.get_epoch()
+                if alert_dispatched:
+                    # Reset the nag timer since we just sent a real message
+                    self.last_alert_time = now
+                elif self.nag_interval > 0 and currently_dead:
+                    # No new messages, but things are still broken. Check the timer.
+                    if (now - self.last_alert_time) >= self.nag_interval:
+                        nag_title = f"Reminder: {len(currently_dead)} Job(s) Offline"
+                        nag_body = "The following jobs are still DEAD and unacknowledged:\n\n"
+                        nag_body += "\n".join([f"- {ident}" for ident in currently_dead])
+                        
+                        # Dispatch the nag
+                        self.dispatch_notification(nag_title, nag_body, priority="urgent", tags="rotating_light,alarm_clock")
+                        
+                        # Reset the nag clock
+                        self.last_alert_time = now
+
+                # 3. Deadman Switch
                 since_last_deadman_ping = time.time() - last_deadman_ping_ts
                 if self.deadman_url and since_last_deadman_ping > 30:
                     try:
-
                         requests.get(self.deadman_url, timeout=self.timeout, headers={"User-Agent": self.user_agent},)
                     finally:
                         last_deadman_ping_ts = time.time()
-
-            except Exception as e:
-                print(f"❌ Loop Error: {e}")
+                
+            except Exception as e: print(f"❌ Error: {e}")
             
             time.sleep(self.poll_interval)
 

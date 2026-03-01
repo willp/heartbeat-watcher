@@ -14,6 +14,7 @@ The `hbwatcher_config.json` file is the brain of the Cardiologist. It defines ho
 | `ntfy_token` | (Optional) Access token for private ntfy servers. | `"tk_123456789"` |
 | `deadman_url` | (Optional) A URL to ping (GET) after every successful loop. Use this to monitor the monitor. | `"https://hc-ping.com/uuid"` |
 | `poll_interval` | How many seconds to wait between evaluation loops. | `60` |
+| `nag_interval` | Seconds to wait before sending a "Reminder" alert if jobs remain in a DEAD state. Set to `0` to disable nagging. | `600` |
 | `retries` | Number of times to retry a failed ntfy notification. | `3` |
 | `delay` | Seconds to wait between retry attempts. | `5` |
 | `timeout` | Connection timeout in seconds for all network requests. | `10` |
