@@ -2,15 +2,14 @@
 
 The `hbwatcher_config.json` file is the brain of the Cardiologist. It defines how the watcher communicates with your Heartbeat server and how it screams for help when things go flatline.  All time-parameters are in units of seconds.
 
-
 ## 📝 Parameter Reference
 
 | Parameter | Description | Example Value |
 | :--- | :--- | :--- |
-| `api_url` | The base URL of your Heartbeat Django server API. | `"https://hb.example.com:8333/api"` |
-| `api_user` | The Basic Auth username configured on your web server. | `"watcher_admin"` |
-| `api_pass` | The Basic Auth password for API access. | `"super-secret-password"` |
-| `ntfy_url` | The full URL to your ntfy topic (local or public). | `"https://ntfy.sh/my-secret-topic-uuid"` |
+| `api_url` | **(required)** The base URL of your Heartbeat Django server API. | `"https://hb.example.com:8333/api"` |
+| `api_user` | **(required)** The Basic Auth username configured on your web server. | `"watcher_admin"` |
+| `api_pass` | **(required)** The Basic Auth password for API access. | `"super-secret-password"` |
+| `ntfy_url` | (Optional) The full URL to your ntfy topic (local or public). | `"https://ntfy.sh/my-secret-topic-uuid"` |
 | `ntfy_token` | (Optional) Access token for private ntfy servers. | `"tk_123456789"` |
 | `deadman_url` | (Optional) A URL to ping (GET) after every successful loop. Use this to monitor the monitor. | `"https://hc-ping.com/uuid"` |
 | `poll_interval` | How many seconds to wait between evaluation loops. | `60` |
