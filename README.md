@@ -65,15 +65,15 @@ sudo journalctl -u hbwatcher -f
 ### v1.0.0
 * Initial Release: Core state-machine logic, ntfy.sh integration, and systemd installer/uninstaller.
 
-# 🧹 Uninstallation
+## 🧹 Uninstallation
 
 To remove the daemon while preserving configuration:
 
-```Bash
+```bash
 sudo ./uninstall.sh
 ```
 To remove everything (including secret keys):
 
-```Bash
+```bash
 sudo ./uninstall.sh --purge
 ```

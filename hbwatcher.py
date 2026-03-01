@@ -36,6 +36,9 @@ class HbWatcher:
         self.delay = cfg.get("delay", 5)
         self.timeout = cfg.get("timeout", 10)
         self.poll_interval = cfg.get("poll_interval", 60)
+        if self.poll_interval < 15:
+            print(f"WARNING, poll_interval may not be set lower than 15 seconds.")
+            self.poll_interval = 15
         
         self.tz_name = os.environ.get("TZ", "America/Los_Angeles")
 
