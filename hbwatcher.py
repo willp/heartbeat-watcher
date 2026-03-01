@@ -91,7 +91,7 @@ class HbWatcher:
 
     def fetch_data(self):
         headers = {"User-Agent": self.user_agent}
-        resp = requests.get(f"{self.api_url}/watcher_data/", auth=(self.api_user, self.api_pass), timeout=self.timeout)
+        resp = requests.get(f"{self.api_url}/watcher_data/", auth=(self.api_user, self.api_pass), timeout=self.timeout, headers=headers,)
         resp.raise_for_status()
         return resp.json()
 
@@ -193,6 +193,7 @@ class HbWatcher:
 
     def run_forever(self):
         print(f"🩺 HbWatcher started. Using TZ: {self.tz_name}")
+        last_deadman_ping_ts = 0
         while True:
             try:
                 data = self.fetch_data()
@@ -223,8 +224,13 @@ class HbWatcher:
                 if updates or (has_msgs and not delivery_failed and data.get('has_undelivered_alerts')):
                     self.update_django(updates, delivery_failed)
 
-                if self.deadman_url:
-                    requests.get(self.deadman_url, timeout=self.timeout)
+                since_last_deadman_ping = time.time() - last_deadman_ping_ts
+                if self.deadman_url and since_last_deadman_ping > 30:
+                    try:
+
+                        requests.get(self.deadman_url, timeout=self.timeout, headers={"User-Agent": self.user_agent},)
+                    finally:
+                        last_deadman_ping_ts = time.time()
 
             except Exception as e:
                 print(f"❌ Loop Error: {e}")
