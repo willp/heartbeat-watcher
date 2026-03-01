@@ -41,6 +41,7 @@ Use this template to start a fresh configuration. Save it as `hbwatcher_config.j
     "ntfy_token": "",
     "deadman_url": "",
     "poll_interval": 60,
+    "nag_interval": 600,
     "retries": 3,
     "delay": 5,
     "timeout": 10
