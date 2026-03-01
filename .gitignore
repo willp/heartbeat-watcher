@@ -5,8 +5,8 @@ __pycache__/
 *$py.class
 
 # custom
-hbwatcher_config.json
-*..json.tmp
+hbwatcher_config.json*
+*.json.tmp
 
 # C extensions
 *.so

@@ -1,11 +1,11 @@
+#!/usr/bin/python3
 import os
-import sys
 import time
 import json
 import re
 import requests
 from datetime import datetime, timezone as dt_timezone
-from zoneinfo import ZoneInfo  # Requires Python 3.9+
+from zoneinfo import ZoneInfo
 
 class HbWatcher:
     def __init__(self, config_path="hbwatcher_config.json"):
@@ -22,12 +22,16 @@ class HbWatcher:
         self.deadman_url = cfg.get("deadman_url", "")
         self.ntfy_url = cfg.get("ntfy_url", "")
         
+        # Auth fields (in case you are still using them)
+        self.ntfy_token = cfg.get("ntfy_token", "")
+        self.ntfy_user = cfg.get("ntfy_user", "")
+        self.ntfy_pass = cfg.get("ntfy_pass", "")
+        
         self.retries = cfg.get("retries", 3)
         self.delay = cfg.get("delay", 5)
         self.timeout = cfg.get("timeout", 10)
         self.poll_interval = cfg.get("poll_interval", 60)
         
-        # Pull preferred timezone from environment or fallback
         self.tz_name = os.environ.get("TZ", "America/Los_Angeles")
 
     def get_epoch(self):
@@ -37,14 +41,12 @@ class HbWatcher:
         """Formats timestamp dynamically (e.g., '2026-02-28 13:41 PST (47 mins ago)')"""
         if not epoch_ts: return "Unknown"
         
-        # Calculate relative time
         delta = self.get_epoch() - epoch_ts
         if delta < 60: rel = f"{delta} sec"
         elif delta < 3600: rel = f"{delta // 60} mins"
         elif delta < 86400: rel = f"{delta // 3600} hours { (delta % 3600) // 60 } mins"
         else: rel = f"{delta // 86400} days { (delta % 86400) // 3600 } hours"
 
-        # Calculate localized absolute time
         dt = datetime.fromtimestamp(epoch_ts, tz=dt_timezone.utc)
         local_dt = dt.astimezone(ZoneInfo(self.tz_name))
         abs_str = local_dt.strftime('%Y-%m-%d %H:%M %Z')
@@ -58,7 +60,7 @@ class HbWatcher:
         return f"{job['hostname']} | {job['app_name']}{port_str}{task_str}{ver_str}"
 
     def matches_filter(self, filter_str, value):
-        if not filter_str: return True # Empty rule matches everything
+        if not filter_str: return True
         val_str = str(value) if value is not None else ""
         
         if filter_str.startswith('/') and filter_str.endswith('/'):
@@ -88,13 +90,25 @@ class HbWatcher:
         payload = {"updates": updates, "failed_delivery": failed_delivery}
         requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), timeout=self.timeout)
 
-    def dispatch_notification(self, title, body):
-        """Tries to send push notification with retries."""
+    def dispatch_notification(self, title, body, priority="default", tags=""):
         if not self.ntfy_url: return True
+        
+        headers = {
+            "Title": title,
+            "Priority": priority
+        }
+        if tags:
+            headers["Tags"] = tags
+
+        auth = None
+        if self.ntfy_token:
+            headers["Authorization"] = f"Bearer {self.ntfy_token}"
+        elif self.ntfy_user and self.ntfy_pass:
+            auth = (self.ntfy_user, self.ntfy_pass)
         
         for attempt in range(1, self.retries + 2):
             try:
-                requests.post(self.ntfy_url, data=body.encode('utf-8'), headers={"Title": title}, timeout=self.timeout)
+                requests.post(self.ntfy_url, data=body.encode('utf-8'), headers=headers, auth=auth, timeout=self.timeout)
                 return True
             except requests.exceptions.RequestException as e:
                 print(f"⚠️ Push notification failed (Attempt {attempt}): {e}")
@@ -119,7 +133,6 @@ class HbWatcher:
             msg = None
             flatlined_at = job.get('flatlined_at')
 
-            # 1. DEAD LOGIC
             if is_dead:
                 if not flatlined_at: 
                     flatlined_at = job['received_timestamp'] + job['alert_after']
@@ -144,7 +157,6 @@ class HbWatcher:
                         msg = f"⏰ Snooze Expired: {ident} is still dead. Originally died at {time_str}."
                         messages["DEAD"].append(msg)
 
-            # 2. ALIVE / RECOVERED LOGIC
             else:
                 flatlined_at = None 
                 if state in ['ALERT_SENT', 'SNOOZED']:
@@ -157,10 +169,7 @@ class HbWatcher:
                     messages["RECOVERED"].append(msg)
                 elif state == 'IN_MAINTENANCE':
                     new_state = 'NORMAL'
-                    msg = f"✅ Silent Recovery: {ident} came back online during maintenance."
-                    # Purposely NOT appending to messages["RECOVERED"] so your phone doesn't buzz.
 
-            # If state changed, queue it for the DB update
             if new_state != state:
                 updates.append({
                     "id": job['id'],
@@ -179,7 +188,6 @@ class HbWatcher:
                 data = self.fetch_data()
                 updates, messages = self.evaluate_states(data)
 
-                # Batch and Send
                 has_msgs = any(messages.values())
                 delivery_failed = False
                 
@@ -192,10 +200,16 @@ class HbWatcher:
                     for cat, msgs in messages.items():
                         if msgs: body += f"--- {cat} ---\n" + "\n".join(msgs) + "\n\n"
 
-                    # Try to send. If False, we trigger degraded mode flag.
-                    delivery_failed = not self.dispatch_notification(title, body.strip())
+                    # --- NEW PRIORITY ROUTING ---
+                    if messages['DEAD']:
+                        priority = "urgent"
+                        tags = "rotating_light,skull"
+                    else:
+                        priority = "default"
+                        tags = "white_check_mark"
 
-                # Always update Django (even if push notification failed)
+                    delivery_failed = not self.dispatch_notification(title, body.strip(), priority, tags)
+
                 if updates or (has_msgs and not delivery_failed and data.get('has_undelivered_alerts')):
                     self.update_django(updates, delivery_failed)
 
