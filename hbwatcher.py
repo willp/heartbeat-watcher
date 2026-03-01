@@ -89,10 +89,28 @@ class HbWatcher:
         payload = {"updates": updates, "failed_delivery": failed_delivery}
         requests.post(f"{self.api_url}/bulk_transition/", json=payload, auth=(self.api_user, self.api_pass), headers=headers, timeout=self.timeout)
 
-    def dispatch_notification(self, title, body, priority="default", tags=""):
+# NEW: Build the Action header string containing multiple tokens
+    def build_actions_header(self, tokens_list):
+        if not tokens_list: return ""
+        
+        # Note: Ensure self.api_url in your config is the PUBLIC url 
+        # so your phone can reach it! (e.g. https://yourdomain:8333/api)
+        ack_url = f"{self.api_url}/webhook/bulk_action/?action=ack"
+        snooze_url = f"{self.api_url}/webhook/bulk_action/?action=snooze"
+        
+        for t in tokens_list:
+            if t.get('ack') and t.get('snooze'):
+                ack_url += f"&t={t['ack']}"
+                snooze_url += f"&t={t['snooze']}"
+        
+        # 'clear=true' dismisses the notification upon successful tap
+        return f"http, Acknowledge All, {ack_url}, method=POST, clear=true; http, Snooze 1 hr, {snooze_url}, method=POST, clear=true"
+
+    def dispatch_notification(self, title, body, priority="default", tags="", actions=""):
         if not self.ntfy_url: return True
         headers = {"Title": title, "Priority": priority, "User-Agent": self.user_agent}
         if tags: headers["Tags"] = tags
+        if actions: headers["Actions"] = actions # <--- Inject the buttons
         if self.ntfy_token: headers["Authorization"] = f"Bearer {self.ntfy_token}"
         
         for attempt in range(1, self.retries + 2):
@@ -109,7 +127,9 @@ class HbWatcher:
         windows = data['maintenance_windows']
         updates = []
         messages = {"DEAD": [], "RECOVERED": [], "MAINTENANCE": []}
-        currently_dead = [] # <--- NEW: Track active dead jobs for the nag timer
+        
+        currently_dead = [] 
+        new_dead_tokens = [] # <--- Track tokens for immediately triggered alerts
 
         for job in jobs:
             is_dead = now > (job['received_timestamp'] + job['alert_after'])
@@ -149,12 +169,22 @@ class HbWatcher:
 
             # Record if it's currently unhandled
             if new_state == 'ALERT_SENT':
-                currently_dead.append(ident)
+                currently_dead.append({
+                    "ident": ident, 
+                    "ack": job.get('ack_token'), 
+                    "snooze": job.get('snooze_token')
+                })
+                # If this is a newly triggered alert, grab tokens for the standard push
+                if state != 'ALERT_SENT':
+                    new_dead_tokens.append({
+                        "ack": job.get('ack_token'), 
+                        "snooze": job.get('snooze_token')
+                    })
 
             if new_state != state:
                 updates.append({"id": job['id'], "previous_state": state, "alert_state": new_state, "flatlined_at": flatlined_at, "message": msg or "Auto-transition."})
                 
-        return updates, messages, currently_dead
+        return updates, messages, currently_dead, new_dead_tokens
 
     def run_forever(self):
         print(f"🩺 HbWatcher v{VERSION} started. TZ: {self.tz_name}")
@@ -162,7 +192,8 @@ class HbWatcher:
         while True:
             try:
                 data = self.fetch_data()
-                updates, messages, currently_dead = self.evaluate_states(data)
+                # Unpack the new return value
+                updates, messages, currently_dead, new_dead_tokens = self.evaluate_states(data)
                 
                 alert_dispatched = False
 
@@ -172,30 +203,32 @@ class HbWatcher:
                     tags = "rotating_light,skull" if messages["DEAD"] else "white_check_mark"
                     body = "\n\n".join([f"--- {k} ---\n" + "\n".join(v) for k, v in messages.items() if v])
                     
-                    delivery_failed = not self.dispatch_notification("Heartbeat Update", body, prio, tags)
+                    # Generate action buttons if there are new dead jobs
+                    actions = ""
+                    if messages["DEAD"] and new_dead_tokens:
+                        actions = self.build_actions_header(new_dead_tokens)
+                        
+                    delivery_failed = not self.dispatch_notification("Heartbeat Update", body, prio, tags, actions)
                     self.update_django(updates, delivery_failed)
                     alert_dispatched = True
 
                 elif updates:
-                    # Updates occurred but were silent (e.g. entering snooze)
                     self.update_django(updates, False)
 
                 # 2. Handle the Nag Timer
                 now = self.get_epoch()
                 if alert_dispatched:
-                    # Reset the nag timer since we just sent a real message
                     self.last_alert_time = now
                 elif self.nag_interval > 0 and currently_dead:
-                    # No new messages, but things are still broken. Check the timer.
                     if (now - self.last_alert_time) >= self.nag_interval:
                         nag_title = f"Reminder: {len(currently_dead)} Job(s) Offline"
                         nag_body = "The following jobs are still DEAD and unacknowledged:\n\n"
-                        nag_body += "\n".join([f"- {ident}" for ident in currently_dead])
+                        nag_body += "\n".join([f"- {job['ident']}" for job in currently_dead])
                         
-                        # Dispatch the nag
-                        self.dispatch_notification(nag_title, nag_body, priority="urgent", tags="rotating_light,alarm_clock")
+                        # Apply buttons to ALL dead jobs in the nag summary
+                        actions = self.build_actions_header(currently_dead)
                         
-                        # Reset the nag clock
+                        self.dispatch_notification(nag_title, nag_body, priority="urgent", tags="rotating_light,alarm_clock", actions=actions)
                         self.last_alert_time = now
 
                 # 3. Deadman Switch
