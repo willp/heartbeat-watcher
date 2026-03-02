@@ -191,6 +191,8 @@ class HbWatcher:
     def run_forever(self):
         print(f"🩺 HbWatcher v{VERSION} started. TZ: {self.tz_name}")
         last_deadman_ping_ts = 0
+        was_tracking_dead = False
+
         while True:
             try:
                 data = self.fetch_data()
@@ -209,6 +211,7 @@ class HbWatcher:
                         priority="low", 
                         tags="white_check_mark"
                     )
+                    print(conf_msg)
 
                 # Handle Standard State Transitions
                 if any(messages.values()):
@@ -222,11 +225,27 @@ class HbWatcher:
                         actions = self.build_actions_header(new_dead_tokens)
                         
                     delivery_failed = not self.dispatch_notification("Heartbeat Update", body, prio, tags, actions)
+                    print(f'{"SEND-FAILED" if delivery_failed else "SENT"} {body}')
                     self.update_django(updates, delivery_failed)
                     alert_dispatched = True
 
                 elif updates:
                     self.update_django(updates, False)
+
+                # --- NEW: THE "ALL CLEAR" CHECK ---
+                if currently_dead:
+                    # We have active dead jobs, remember this for later
+                    was_tracking_dead = True
+                elif was_tracking_dead:
+                    # We had dead jobs last poll, but now we have 0!
+                    self.dispatch_notification(
+                        title="All Clear", 
+                        body="Zero unacknowledged dead jobs remain.", 
+                        priority="default", 
+                        tags="tada,sparkles"
+                    )
+                    was_tracking_dead = False # Reset the tracker
+                    print("All alerts are cleared now. No unacknowledged dead jobs.")
 
                 # Handle the Nag Timer
                 now = self.get_epoch()
@@ -242,6 +261,7 @@ class HbWatcher:
                         actions = self.build_actions_header(currently_dead)
                         
                         self.dispatch_notification(nag_title, nag_body, priority="urgent", tags="rotating_light,alarm_clock", actions=actions)
+                        print(nag_body)
                         self.last_alert_time = now
 
                 # Deadman Switch
