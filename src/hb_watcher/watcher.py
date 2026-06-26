@@ -6,12 +6,18 @@ import platform
 import re
 import time
 from datetime import datetime, timezone as dt_timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
 
-__version__ = "1.1.0"
+
+def _get_version() -> str:
+    try:
+        return version("hb-watcher")
+    except PackageNotFoundError:
+        return "unknown"
 
 CONFIG_DIR_NAME = "hbwatcher"
 CONFIG_FILE_NAME = "hbwatcher_config.json"
@@ -32,7 +38,7 @@ class HbWatcher:
     def __init__(self, config_path: str | None = None):
         self.config_path = config_path or _default_config_path()
         self.load_config()
-        self.user_agent = f"HbWatcher/{__version__} (Python {platform.python_version()})"
+        self.user_agent = f"HbWatcher/{_get_version()} (Python {platform.python_version()})"
 
         # Initialize the nag timer so it is primed to nag immediately
         # on the first loop if things are already broken upon restart.
@@ -251,7 +257,7 @@ class HbWatcher:
         return updates, messages, currently_dead, new_dead_tokens
 
     def run_forever(self):
-        print(f"🩺 HbWatcher v{__version__} started. TZ: {self.tz_name}")
+        print(f"🩺 HbWatcher v{_get_version()} started. TZ: {self.tz_name}")
         last_deadman_ping_ts = 0
         was_tracking_dead = False
 
