@@ -1,0 +1,13 @@
+{
+    "api_url": "https://hb.example.com:8333/api",
+    "api_user": "username",
+    "api_pass": "a really strong password",
+    "ntfy_url": "https://ntfy.sh/your-secret-topic-uuid",
+    "ntfy_token": "tk_123456789",
+    "deadman_url": "https://hc-ping.com/deadbeef-1234-4321-aced-deadbeefdead",
+    "poll_interval": 60,
+    "nag_interval": 600,
+    "retries": 3,
+    "delay": 5,
+    "timeout": 10
+}

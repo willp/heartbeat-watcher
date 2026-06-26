@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hb-watcher"
+version = "1.1.0"
+description = "Heartbeat monitoring daemon for the Nuclei ecosystem"
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.28.0",
+]
+
+[project.scripts]
+hbwatcher = "hb_watcher.watcher:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["hb_watcher*"]
