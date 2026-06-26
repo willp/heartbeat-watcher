@@ -62,3 +62,5 @@ docs/_build/
 # PyBuilder
 target/
 
+new_release_to_pypi.sh
+
